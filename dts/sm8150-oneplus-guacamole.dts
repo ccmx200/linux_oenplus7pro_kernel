@@ -68,3 +68,189 @@
 		pinctrl-0 = <&tp_irq_active &tp_rst_active &tp_1v8_active>;
 	};
 };
+/* ---- OnePlus 7 Pro display (LAB/IBB + panel) ---- */
+&spmi_bus {
+	pmic@4 {
+	labibb {
+		compatible = "qcom,pmi8998-lab-ibb";
+
+		ibb: ibb {
+			interrupts = <0x4 0xdc 0x2 IRQ_TYPE_EDGE_RISING>,
+				     <3 0xdc 0x0 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "sc-err", "ocp";
+		};
+
+		lab: lab {
+			interrupts = <0x4 0xde 0x1 IRQ_TYPE_EDGE_RISING>,
+				     <3 0xde 0x0 IRQ_TYPE_LEVEL_LOW>;
+			interrupt-names = "sc-err", "ocp";
+		};
+	};
+	};
+};
+
+&mdss {
+	status = "okay";
+};
+
+&mdss_dsi0 {
+	status = "okay";
+	vdda-supply = <&vdda_dsi_0_0p9>;
+	vdda-phy-supply = <&vreg_l3c_1p2>;
+	vdda-pll-supply = <&vreg_l3c_1p2>;
+
+	panel@0 {
+		compatible = "samsung,ams639rq08";
+		reg = <0>;
+		vdd3p3-supply = <&vreg_l11c_3p3>;
+		vddio-supply = <&vreg_l1c_1p8>;
+		vsp-supply = <&lab>;
+		vsn-supply = <&ibb>;
+		reset-gpios = <&tlmm 6 GPIO_ACTIVE_LOW>;
+	};
+};
+
+/* ---- 第一阶段：只打开 PCIe 控制器，验证总线能否枚举 ---- */
+
+/* ---- 显示暂时关掉（panel 链路未完成，开了会崩）---- */
+&mdss {
+	status = "disabled";
+};
+
+&mdss_dsi0 {
+	status = "disabled";
+};
+
+
+/* ---- WCN3998 供电（按 vendor icnss 映射）：真实 regulator，不是 dummy ---- */
+
+/* 驱动实际使用的 supply 名（dmesg 报的） */
+
+/* ---- WCN3998 电源序列（pwrseq）：vddio 单独，其余 4 路 ---- */
+
+&wifi {
+	qcom,calibration-variant = "oneplus_sm8150";
+	qcom,snoc-host-cap-8bit-quirk;
+	pwrseq = <&wcn3998_pmu>;
+	pwrseq-names = "wlan";
+};
+
+/* ---- PCIe0：主线节点已含 perst/wake/phys/pd，只需 enable 控制器和 PHY ---- */
+
+&pcie0_phy {
+	status = "okay";
+};
+
+/* PCIe0：主线节点已含 perst/wake/phys/power-domains，这里只补供电并 enable */
+&pcie0 {
+	status = "okay";
+	vdda-supply = <&vreg_l5a_0p875>;      /* 0.875V PCIe 模拟 */
+	vddpe-3v3-supply = <&vreg_l11c_3p3>;  /* 3.3V 给下游设备/WiFi */
+};
+
+/* WiFi 芯片常电（SoC CX/IO 需在 probe 前上电，否则 ROM 不运行、无 FW_READY） */
+&vreg_l1a_0p75 {
+	regulator-always-on;
+};
+
+&vreg_l7a_1p8 {
+	regulator-always-on;
+};
+
+&vreg_l1c_1p8 {
+	regulator-always-on;
+};
+/* always-on-wifi */
+
+&pm8150_gpios {
+	sw_ctrl_default: sw-ctrl-default-state {
+		pins = "gpio3";
+		function = "normal";
+		input-enable;
+		bias-pull-down;
+	};
+};
+
+/* ---- WCN3998 PMU（按 sm8150-hdk 的写法：pwrseq + 内部 fixed LDO） ---- */
+/ {
+	wcn3998_pmu: pwrseq {
+		compatible = "qcom,wcn3998-pmu";
+
+		pinctrl-0 = <&sw_ctrl_default>;
+		pinctrl-names = "default";
+
+		vddio-supply  = <&pm8150_s4>;
+		vddxo-supply  = <&vreg_l7a_1p8>;
+		vddrf-supply  = <&vreg_l2c_1p3>;
+		vddch0-supply = <&vreg_l11c_3p3>;
+		vddch1-supply = <&vreg_l10c_3p3>;
+
+		wlan-enable-gpios = <&tlmm 169 GPIO_ACTIVE_HIGH>;
+
+		regulators {
+			vreg_pmu_io: ldo0 {
+				regulator-name = "vreg_pmu_io";
+			};
+
+			vreg_pmu_xo: ldo1 {
+				regulator-name = "vreg_pmu_xo";
+			};
+
+			vreg_pmu_rf: ldo2 {
+				regulator-name = "vreg_pmu_rf";
+			};
+
+			vreg_pmu_ch0: ldo3 {
+				regulator-name = "vreg_pmu_ch0";
+			};
+
+			vreg_pmu_ch1: ldo4 {
+				regulator-name = "vreg_pmu_ch1";
+			};
+		};
+	};
+};
+
+&wifi {
+	vdd-0.8-cx-mx-supply = <&vreg_l1a_0p75>;
+	vdd-1.8-xo-supply    = <&vreg_pmu_xo>;
+	vdd-1.3-rfa-supply   = <&vreg_pmu_rf>;
+	vdd-3.3-ch0-supply   = <&vreg_pmu_ch0>;
+	vdd-3.3-ch1-supply   = <&vreg_pmu_ch1>;
+
+	qcom,calibration-variant = "oneplus_sm8150";
+	qcom,snoc-host-cap-8bit-quirk;
+
+	pwrseq = <&wcn3998_pmu>;
+	pwrseq-names = "wlan";
+
+	status = "okay";
+};
+
+/* PM8150 S4A 1.8V —— WCN3998 的 VDDIO（HDK 用 s4a_1p8，必须 boot-on） */
+&apps_rsc {
+	pm8150-rpmh-regulators {
+		pm8150_s4: smps4 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+	};
+};
+
+&vreg_l7a_1p8 {
+	regulator-boot-on;
+};
+
+&vreg_l2c_1p3 {
+	regulator-boot-on;
+};
+
+&vreg_l11c_3p3 {
+	regulator-boot-on;
+};
+
+&vreg_l10c_3p3 {
+	regulator-boot-on;
+};

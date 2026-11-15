@@ -1,0 +1,6 @@
+# 本地交叉编译 bindeb-pkg 时跳过 dpkg 构建依赖检查（libssl-dev:arm64 之类）
+--- a/scripts/Makefile.package
++++ b/scripts/Makefile.package
+@@
+-	+$(strip dpkg-buildpackage \
++	+$(strip dpkg-buildpackage -d \

@@ -1,0 +1,11 @@
+--- /root/pwrseq-qcom-wcn.c.orig	2026-11-15 23:44:15.549135602 +0800
++++ /root/kbuild/linux/drivers/power/sequencing/pwrseq-qcom-wcn.c	2026-11-15 23:44:15.568262969 +0800
+@@ -497,7 +497,7 @@
+ 				     "Failed to get the Bluetooth enable GPIO\n");
+ 
+ 	ctx->wlan_gpio = devm_gpiod_get_optional(dev, "wlan-enable",
+-						 GPIOD_OUT_LOW);
++						 GPIOD_OUT_HIGH);
+ 	if (IS_ERR(ctx->wlan_gpio))
+ 		return dev_err_probe(dev, PTR_ERR(ctx->wlan_gpio),
+ 				     "Failed to get the WLAN enable GPIO\n");

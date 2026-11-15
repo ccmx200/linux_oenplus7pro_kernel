@@ -129,8 +129,6 @@
 /* ---- WCN3998 电源序列（pwrseq）：vddio 单独，其余 4 路 ---- */
 
 &wifi {
-	qcom,calibration-variant = "oneplus_sm8150";
-	qcom,snoc-host-cap-8bit-quirk;
 	pwrseq = <&wcn3998_pmu>;
 	pwrseq-names = "wlan";
 };
@@ -162,21 +160,13 @@
 };
 /* always-on-wifi */
 
-&pm8150_gpios {
-	sw_ctrl_default: sw-ctrl-default-state {
-		pins = "gpio3";
-		function = "normal";
-		input-enable;
-		bias-pull-down;
-	};
-};
 
 /* ---- WCN3998 PMU（按 sm8150-hdk 的写法：pwrseq + 内部 fixed LDO） ---- */
 / {
 	wcn3998_pmu: pwrseq {
 		compatible = "qcom,wcn3998-pmu";
 
-		pinctrl-0 = <&sw_ctrl_default>;
+		pinctrl-0 = <&wlan_en_default>;
 		pinctrl-names = "default";
 
 		vddio-supply  = <&pm8150_s4>;
@@ -185,7 +175,6 @@
 		vddch0-supply = <&vreg_l11c_3p3>;
 		vddch1-supply = <&vreg_l10c_3p3>;
 
-		wlan-enable-gpios = <&tlmm 169 GPIO_ACTIVE_HIGH>;
 
 		regulators {
 			vreg_pmu_io: ldo0 {
@@ -218,8 +207,6 @@
 	vdd-3.3-ch0-supply   = <&vreg_pmu_ch0>;
 	vdd-3.3-ch1-supply   = <&vreg_pmu_ch1>;
 
-	qcom,calibration-variant = "oneplus_sm8150";
-	qcom,snoc-host-cap-8bit-quirk;
 
 	pwrseq = <&wcn3998_pmu>;
 	pwrseq-names = "wlan";
@@ -245,12 +232,24 @@
 
 &vreg_l2c_1p3 {
 	regulator-boot-on;
+	regulator-always-on;
 };
 
 &vreg_l11c_3p3 {
 	regulator-boot-on;
+	regulator-always-on;
 };
 
 &vreg_l10c_3p3 {
 	regulator-boot-on;
+	regulator-always-on;
+};
+
+&tlmm {
+	wlan_en_default: wlan-en-default-state {
+		pins = "gpio50";
+		function = "gpio";
+		bias-disable;
+		output-high;
+	};
 };

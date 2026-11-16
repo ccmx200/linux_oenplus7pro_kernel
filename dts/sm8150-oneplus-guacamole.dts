@@ -304,3 +304,16 @@
 &gpi_dma2 {
 	status = "okay";
 };
+
+/* Adreno 640 GPU + GMU */
+&gmu {
+	status = "okay";
+};
+
+&gpu {
+	status = "okay";
+
+	zap-shader {
+		firmware-name = "qcom/sm8150/oneplus7/a640_zap.mbn";
+	};
+};

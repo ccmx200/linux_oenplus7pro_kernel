@@ -1,0 +1,66 @@
+name: build-kernel
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '内核源码分支'
+        required: false
+        default: 'kernel-7.3.0-op7p'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build OnePlus 7 Pro kernel (7.3.0)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || 'kernel-7.3.0-op7p' }}
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu bc bison flex libssl-dev libelf-dev \
+            kmod cpio rsync zstd libdw-dev dpkg-dev device-tree-compiler \
+            libgnutls28-dev python3
+
+      - name: Configure
+        run: |
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- raphael.config
+
+      - name: Build kernel and deb packages
+        run: |
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) bindeb-pkg
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p out
+          mv -v ../linux-image-*.deb ../linux-headers-*.deb out/ 2>/dev/null || \
+            mv -v linux-image-*.deb linux-headers-*.deb out/ 2>/dev/null || true
+          ls -lh out/
+
+      - name: Upload kernel debs
+        uses: actions/upload-artifact@v4
+        with:
+          name: oneplus7pro-kernel-debs
+          path: out/*.deb
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*.deb

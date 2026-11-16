@@ -2,7 +2,7 @@ name: build-kernel
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, kernel-7.3.0-op7p ]
     tags: [ 'v*' ]
   workflow_dispatch:
     inputs:

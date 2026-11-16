@@ -66,6 +66,10 @@
 
 		pinctrl-names = "default";
 		pinctrl-0 = <&tp_irq_active &tp_rst_active &tp_1v8_active>;
+
+		touchscreen-size-x = <1440>;
+		touchscreen-size-y = <3120>;
+		touchscreen-inverted-y;
 	};
 };
 /* ---- OnePlus 7 Pro display (LAB/IBB + panel) ---- */
@@ -289,5 +293,14 @@
 &mdss_dsi0_out {
 	data-lanes = <0 1 2 3>;
 	remote-endpoint = <&panel_in>;
+	status = "okay";
+};
+
+/* 触摸 (S6SY761 @ i2c17) 所在的 QUP wrapper */
+&qupv3_id_2 {
+	status = "okay";
+};
+
+&gpi_dma2 {
 	status = "okay";
 };

@@ -1,0 +1,600 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Devicetree for the OnePlus 7 Pro. This device uses a samsung touch driver
+ * and has a 1440p panel but is otherwise similar to the rest of the series.
+ *
+ * Copyright (c) 2021, Caleb Connolly <caleb@connolly.tech>
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/sound/qcom,q6afe.h>
+#include <dt-bindings/sound/qcom,q6asm.h>
+#include <dt-bindings/sound/qcom,wcd934x.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+
+#include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+#include <dt-bindings/gpio/gpio.h>
+#include "sm8150-oneplus-common.dtsi"
+#include "sm8150-wcd9340.dtsi"
+
+/* ---- OnePlus 7 Pro display (LAB/IBB + panel) ---- */
+/* ---- 第一阶段：只打开 PCIe 控制器，验证总线能否枚举 ---- */
+/* ---- 显示暂时关掉（panel 链路未完成，开了会崩）---- */
+/* ---- WCN3998 供电（按 vendor icnss 映射）：真实 regulator，不是 dummy ---- */
+/* 驱动实际使用的 supply 名（dmesg 报的） */
+/* ---- WCN3998 电源序列（pwrseq）：vddio 单独，其余 4 路 ---- */
+/* ---- PCIe0：主线节点已含 perst/wake/phys/pd，只需 enable 控制器和 PHY ---- */
+/* PCIe0：主线节点已含 perst/wake/phys/power-domains，这里只补供电并 enable */
+/* WiFi 芯片常电（SoC CX/IO 需在 probe 前上电，否则 ROM 不运行、无 FW_READY） */
+/* always-on-wifi */
+/* ---- WCN3998 PMU（按 sm8150-hdk 的写法：pwrseq + 内部 fixed LDO） ---- */
+/* PM8150 S4A 1.8V —— WCN3998 的 VDDIO（HDK 用 s4a_1p8，必须 boot-on） */
+/* Nura 写法：只 status okay，用 dummy regulator，不接管供电/pwrseq */
+/* ---------- 原生 DSI + Samsung OnePlus DSC 面板 ---------- */
+/* ================= 显示（原生 DSI + OnePlus DSC 面板） ================= */
+/* 触摸 (S6SY761 @ i2c17) 所在的 QUP wrapper */
+/* Adreno 640 GPU + GMU */
+/* 音量键：PM8150 GPIO6 = 上，GPIO7 = 下（一加 SM8150 系列实测） */
+/* 电池 / 充电（照抄 hotdog 结构，容量按 guac 4000mAh） */
+/* ===== 蓝牙（WCN3990/3998，UART13 @0xc8c000）照抄 hotdog ===== */
+/* ===== NFC：NXP NQ/PN553 @ i2c9 0x28 ===== */
+/* ===== 外置电量计 bq27411 @ i2c8 0x55 ===== */
+/* ================= 音频（照抄 hotdog：ADSP + WCD9340 + 内部声卡） ================= */
+/* SLIM NGD 用 BAM DMA，默认 disabled 会导致 slim 崩溃 */
+
+/* ===== 板级定义（型号/按键/电池/面板供电/声卡） ===== */
+/ {
+	model = "OnePlus 7 Pro";
+	compatible = "oneplus,guacamole", "oneplus,oneplus7", "qcom,sm8150";
+
+	aliases {
+		display0 = &framebuffer0;
+	};
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		stdout-path = "display0";
+
+		/*
+		 * hack: Use framebuffer setup by the bootloader for simplefb.
+		 * the address is taken from the bootloader config (strings xbl.img | grep "Display Reserved")
+		 */
+		framebuffer0: framebuffer@9C000000 {
+			compatible = "simple-framebuffer";
+			reg = <0 0x9C000000 0 (1440 * 3120 * 4)>;
+			width = <1440>;
+			height = <3120>;
+			stride = <(1440 * 4)>;
+			format = "a8r8g8b8";
+			status = "okay";
+
+		};
+	};
+
+	reserved-memory {
+	// hack: Bootloader framebuffer memory region
+		fb_mem: memory@a1a10000 {
+			compatible = "removed-dma-pool";
+			no-map;
+			reg = <0 0x9C000000 0 (1440 * 3120 * 4)>;
+		};
+	};
+};
+
+/ {
+	wcn3998_pmu: pwrseq {
+		compatible = "qcom,wcn3998-pmu";
+
+		pinctrl-0 = <&wlan_en_default>;
+		pinctrl-names = "default";
+
+		vddio-supply  = <&pm8150_s4>;
+		vddxo-supply  = <&vreg_l7a_1p8>;
+		vddrf-supply  = <&vreg_l2c_1p3>;
+		vddch0-supply = <&vreg_l11c_3p3>;
+		vddch1-supply = <&vreg_l10c_3p3>;
+
+
+		regulators {
+			vreg_pmu_io: ldo0 {
+				regulator-name = "vreg_pmu_io";
+			};
+
+			vreg_pmu_xo: ldo1 {
+				regulator-name = "vreg_pmu_xo";
+			};
+
+			vreg_pmu_rf: ldo2 {
+				regulator-name = "vreg_pmu_rf";
+			};
+
+			vreg_pmu_ch0: ldo3 {
+				regulator-name = "vreg_pmu_ch0";
+			};
+
+			vreg_pmu_ch1: ldo4 {
+				regulator-name = "vreg_pmu_ch1";
+			};
+		};
+	};
+};
+
+/ {
+	panel_avdd_1p8: panel-avdd-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "panel_avdd_1p8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+};
+
+/ {
+	gpio_keys: gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&volume_up_state>, <&volume_down_state>;
+
+		volume-up {
+			label = "volume_up";
+			gpios = <&pm8150_gpios 6 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_KEY>;
+			linux,code = <KEY_VOLUMEUP>;
+			wakeup-source;
+			debounce-interval = <15>;
+		};
+
+		volume-down {
+			label = "volume_down";
+			gpios = <&pm8150_gpios 7 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_KEY>;
+			linux,code = <KEY_VOLUMEDOWN>;
+			wakeup-source;
+			debounce-interval = <15>;
+		};
+	};
+};
+
+/ {
+	battery: battery {
+		compatible = "simple-battery";
+		device-chemistry = "lithium-ion-polymer";
+		charge-full-design-microamp-hours = <4000000>;
+		voltage-min-design-microvolt = <3300000>;
+		voltage-max-design-microvolt = <4420000>;
+		constant-charge-current-max-microamp = <1500000>;
+		constant-charge-voltage-max-microvolt = <4400000>;
+		charge-term-current-microamp = <300000>;
+	};
+};
+
+/ {
+	aliases {
+		serial1 = &uart13;
+	};
+};
+
+/ {
+	sound: sound {
+		compatible = "qcom,sm8150-sndcard";
+		model = "OnePlus 7 Pro";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&wcd_intr_default>;
+
+		mm1-dai-link {
+			link-name = "MultiMedia1";
+			cpu {
+				sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA1>;
+			};
+		};
+
+		slim-dai-link {
+			link-name = "SLIM Playback 1";
+			cpu {
+				sound-dai = <&q6afedai SLIMBUS_0_RX>;
+			};
+			platform {
+				sound-dai = <&q6routing>;
+			};
+			codec {
+				sound-dai = <&wcd9340 AIF1_PB>;
+			};
+		};
+
+		slimcap-dai-link {
+			link-name = "SLIM Capture 1";
+			cpu {
+				sound-dai = <&q6afedai SLIMBUS_0_TX>;
+			};
+			platform {
+				sound-dai = <&q6routing>;
+			};
+			codec {
+				sound-dai = <&wcd9340 AIF1_CAP>;
+			};
+		};
+	};
+};
+
+/* ===== RPMh 资源与 regulator 覆盖 ===== */
+&apps_rsc {
+	pm8150-rpmh-regulators {
+		pm8150_s4: smps4 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+	};
+};
+
+/* ===== PMIC GPIO（音量键） ===== */
+&pm8150_gpios {
+	volume_up_state: volume-up-state {
+		pins = "gpio6";
+		function = "normal";
+		input-enable;
+		bias-pull-up;
+		power-source = <1>;
+		qcom,drive-strength = <PMIC_GPIO_STRENGTH_NO>;
+	};
+
+	volume_down_state: volume-down-state {
+		pins = "gpio7";
+		function = "normal";
+		input-enable;
+		bias-pull-up;
+		power-source = <1>;
+		qcom,drive-strength = <PMIC_GPIO_STRENGTH_NO>;
+	};
+};
+
+/* ===== 电源键 ===== */
+&pon_pwrkey {
+	status = "okay";
+};
+
+/* ===== 充电 ===== */
+&pm8150b_charger {
+	monitored-battery = <&battery>;
+	status = "okay";
+};
+
+/* ===== SPMI 总线 ===== */
+&spmi_bus {
+	pmic@4 {
+	labibb {
+		compatible = "qcom,pmi8998-lab-ibb";
+
+		ibb: ibb {
+			interrupts = <0x4 0xdc 0x2 IRQ_TYPE_EDGE_RISING>,
+				     <3 0xdc 0x0 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "sc-err", "ocp";
+		};
+
+		lab: lab {
+			interrupts = <0x4 0xde 0x1 IRQ_TYPE_EDGE_RISING>,
+				     <3 0xde 0x0 IRQ_TYPE_LEVEL_LOW>;
+			interrupt-names = "sc-err", "ocp";
+		};
+	};
+	};
+};
+
+/* ===== TLMM 引脚复用 ===== */
+&tlmm {
+	wlan_en_default: wlan-en-default-state {
+		pins = "gpio50";
+		function = "gpio";
+		bias-disable;
+		output-high;
+	};
+	panel_te_default: panel-te-default-state {
+		pins = "gpio8";
+		function = "mdp_vsync";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+	qup_uart13_sleep: qup-uart13-sleep-state {
+		pinmux {
+			pins = "gpio43", "gpio44", "gpio45", "gpio46";
+			function = "gpio";
+		};
+		cts-pins {
+			pins = "gpio43";
+			drive-strength = <2>;
+			bias-disable;
+		};
+		rts-pins {
+			pins = "gpio44";
+			drive-strength = <2>;
+			bias-pull-down;
+		};
+		tx-pins {
+			pins = "gpio45";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		rx-pins {
+			pins = "gpio46";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	nfc_default: nfc-default-state {
+		irq-pins {
+			pins = "gpio47";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		enable-pins {
+			pins = "gpio41", "gpio48";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+		clk-req-pins {
+			pins = "gpio113";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+};
+
+/* ===== PCIe ===== */
+&pcie0_phy {
+	status = "okay";
+};
+
+&pcie0 {
+	status = "okay";
+	vdda-supply = <&vreg_l5a_0p875>;      /* 0.875V PCIe 模拟 */
+	vddpe-3v3-supply = <&vreg_l11c_3p3>;  /* 3.3V 给下游设备/WiFi */
+};
+
+/* ===== 音频：Q6ASM 前端 ===== */
+&q6asmdai {
+	dai@0 {
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
+	};
+
+	dai@1 {
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>;
+	};
+
+	dai@2 {
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA3>;
+	};
+};
+
+/* ===== 音频：ADSP ===== */
+&remoteproc_adsp {
+	firmware-name = "qcom/sm8150/oneplus7/adsp.mbn";
+	status = "okay";
+};
+
+/* ===== 调制解调器 ===== */
+&remoteproc_mpss {
+	status = "okay";
+	firmware-name = "qcom/sm8150/oneplus7/modem.mdt";
+};
+
+/* ===== 音频：SLIM BAM DMA ===== */
+&slimbam {
+	status = "okay";
+};
+
+/* ===== 音频：WCD9340 Codec ===== */
+&wcd9340 {
+	reset-gpios = <&tlmm 143 GPIO_ACTIVE_HIGH>;
+	vdd-buck-sido-supply = <&pm8150_s4>;
+	vdd-buck-supply = <&pm8150_s4>;
+	vdd-tx-supply = <&pm8150_s4>;
+	vdd-rx-supply = <&pm8150_s4>;
+	vdd-io-supply = <&pm8150_s4>;
+};
+
+/* ===== I2C8 外置电量计 ===== */
+&i2c8 {
+	/delete-property/ dmas;
+	/delete-property/ dma-names;
+	clock-frequency = <100000>;
+	status = "okay";
+
+	fuel-gauge@55 {
+		compatible = "ti,bq27411";
+		reg = <0x55>;
+	};
+};
+
+/* ===== I2C9 NFC ===== */
+&i2c9 {
+	clock-frequency = <100000>;
+	status = "okay";
+
+	nfc@28 {
+		compatible = "nxp,nxp-nci-i2c";
+		reg = <0x28>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <47 IRQ_TYPE_LEVEL_HIGH>;
+
+		enable-gpios = <&tlmm 41 GPIO_ACTIVE_HIGH>;
+		firmware-gpios = <&tlmm 48 GPIO_ACTIVE_HIGH>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&nfc_default>;
+	};
+};
+
+/* ===== I2C13（与 UART13 同址，关闭） ===== */
+&i2c13 {
+	status = "disabled";
+};
+
+/* ===== I2C17 触摸 S6SY761 ===== */
+&i2c17 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	touchscreen@48 {
+		compatible = "samsung,s6sy761";
+		status = "okay";
+		reg = <0x48>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <122 0x2008>;
+		vdd-supply = <&vreg_l17a_3p0>;
+
+		reset-gpios = <&tlmm 54 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&tp_irq_active &tp_rst_active &tp_1v8_active>;
+
+		touchscreen-size-x = <1440>;
+		touchscreen-size-y = <3120>;
+		touchscreen-inverted-y;
+	};
+};
+
+/* ===== UART13 蓝牙 ===== */
+&uart13 {
+	status = "okay";
+
+	/delete-property/ interrupts;
+	interrupts-extended = <&intc GIC_SPI 585 IRQ_TYPE_LEVEL_HIGH>,
+			      <&tlmm 46 IRQ_TYPE_EDGE_FALLING>;
+
+	pinctrl-names = "default", "sleep";
+	pinctrl-1 = <&qup_uart13_sleep>;
+
+	bluetooth {
+		compatible = "qcom,wcn3990-bt";
+		firmware-name = "crnv21.bin", "crbtfw21.tlv";
+		vddio-supply = <&vreg_l1a_0p75>;
+		vddxo-supply = <&vreg_l7a_1p8>;
+		vddrf-supply = <&vreg_l2c_1p3>;
+		vddch0-supply = <&vreg_l11c_3p3>;
+		max-speed = <3200000>;
+	};
+};
+
+/* ===== GPU：GMU ===== */
+&gmu {
+	status = "okay";
+};
+
+/* ===== GPU：Adreno 640 ===== */
+&gpu {
+	status = "okay";
+
+	zap-shader {
+		firmware-name = "qcom/sm8150/oneplus7/a640_zap.mbn";
+	};
+};
+
+/* ===== GPI DMA ===== */
+&gpi_dma2 {
+	status = "okay";
+};
+
+/* ===== QUPv3 串行引擎 ===== */
+&qupv3_id_2 {
+	status = "okay";
+};
+
+/* ===== 显示子系统 ===== */
+&mdss {
+	status = "okay";
+};
+
+/* ===== 显示：MDP ===== */
+&mdss_mdp {
+	status = "okay";
+};
+
+/* ===== 显示：DSI PHY ===== */
+&mdss_dsi0_phy {
+	status = "okay";
+	vdds-supply = <&vreg_l5a_0p875>;
+};
+
+/* ===== 显示：DSI 面板 ===== */
+&mdss_dsi0 {
+	status = "okay";
+	vdda-supply = <&vreg_l3c_1p2>;
+
+	panel@0 {
+		compatible = "samsung,oneplus-dsc";
+		reg = <0>;
+
+		vddio-supply = <&vreg_l14a_1p8>;
+		avdd-supply = <&panel_avdd_1p8>;
+
+		reset-gpios = <&tlmm 6 GPIO_ACTIVE_LOW>;
+		pinctrl-0 = <&panel_te_default>;
+		pinctrl-names = "default";
+
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&mdss_dsi0_out>;
+			};
+		};
+	};
+};
+
+/* ===== 显示：DSI 输出 ===== */
+&mdss_dsi0_out {
+	data-lanes = <0 1 2 3>;
+	remote-endpoint = <&panel_in>;
+	status = "okay";
+};
+
+/* ===== WiFi WCN3998 ===== */
+&wifi {
+	status = "okay";
+
+	vdd-0.8-cx-mx-supply = <&vreg_l1a_0p75>;
+	vdd-1.8-xo-supply = <&vreg_l7a_1p8>;
+	vdd-1.3-rfa-supply = <&vreg_l2c_1p3>;
+	vdd-3.3-ch0-supply = <&vreg_l11c_3p3>;
+	vdd-3.3-ch1-supply = <&vreg_l10c_3p3>;
+};
+
+/* ===== regulator 微调 ===== */
+&vreg_l10c_3p3 {
+	regulator-boot-on;
+	regulator-always-on;
+};
+
+&vreg_l11c_3p3 {
+	regulator-boot-on;
+	regulator-always-on;
+};
+
+&vreg_l1a_0p75 {
+	regulator-always-on;
+};
+
+&vreg_l1c_1p8 {
+	regulator-always-on;
+};
+
+&vreg_l2c_1p3 {
+	regulator-boot-on;
+	regulator-always-on;
+};
+
+&vreg_l7a_1p8 {
+	regulator-always-on;
+	regulator-boot-on;
+};

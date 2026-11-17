@@ -1,0 +1,1503 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Xiaomi Redmi K20 Pro / Mi 9T Pro (raphael)
+ *
+ * Copyright (c) 2026 GengWei1997 <gw19970326@gmail.com>
+ *
+ * The Redmi K20 Pro is an SM8150 handset.  This file describes only what is
+ * needed to bring the board up on mainline: storage, USB in peripheral mode,
+ * the debug UART and the regulators those depend on.  Everything that needs
+ * firmware which cannot be redistributed (GPU, remoteprocs, WLAN, camera) is
+ * left disabled so that probing them does not add boot-time timeouts.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+#include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+#include <dt-bindings/sound/qcom,q6afe.h>
+#include <dt-bindings/sound/qcom,q6asm.h>
+#include <dt-bindings/usb/pd.h>
+#include "sm8150.dtsi"
+#include "pm8150.dtsi"
+#include "pm8150b.dtsi"
+#include "pm8150l.dtsi"
+
+/ {
+	model = "Xiaomi Redmi K20 Pro";
+	compatible = "xiaomi,raphael", "qcom,sm8150";
+	chassis-type = "handset";
+
+	/*
+	 * Memory map as programmed by the bootloader.  sm8150.dtsi leaves the
+	 * size at 0 ("we expect the bootloader to fill in the size") and relies
+	 * on the board file for the real layout, so this is not optional: with
+	 * the placeholder reg the kernel gets zero bytes of RAM and dies before
+	 * it can even bring up USB.
+	 *
+	 * The ranges are the ones the UEFI image hands over:
+	 *   0x80000000 + 0x3cc00000  low DRAM  (972 MiB)
+	 *   0x100000000 + 0xc0000000  high DRAM (3 GiB)
+	 *   0xc0000000 + 0x80000000   high DRAM (2 GiB)
+	 */
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x00 0x80000000 0x00 0x3cc00000>,
+		      <0x01 0x40000000 0x00 0xc0000000>,
+		      <0x00 0xc0000000 0x00 0x80000000>;
+	};
+
+	aliases {
+		serial0 = &uart2;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	/*
+	 * The K20 Pro ships with two cell variants; both are 4000 mAh with
+	 * the same 4.4 V maximum and the same charge tables, so one
+	 * description covers them both.  The tables are the cell vendor's
+	 * charge profile: JEITA breakpoints in decidegrees Celsius, step
+	 * charging in microvolts, both asking for microamps.  They only
+	 * ever lower the maxima above, except for the charge pump ceiling:
+	 * while the pump carries the charge the cell may take the current
+	 * of the pump's own figure instead of the buck ceiling.
+	 */
+	battery: battery {
+		compatible = "simple-battery";
+
+		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4400000>;
+		constant-charge-voltage-max-microvolt = <4400000>;
+		constant-charge-current-max-microamp = <3200000>;
+		charge-full-design-microamp-hours = <4000000>;
+
+		qcom,charge-pump-fcc-ua = <5100000>;
+
+		qcom,jeita-fcc-ranges = <0    50  390000
+					 51   100 1100000
+					 101  150 2700000
+					 151  450 5100000
+					 451  580 1900000>;
+		qcom,jeita-fv-ranges = <0    50  4400000
+					51   100 4400000
+					101  150 4400000
+					151  450 4400000
+					451  580 4100000>;
+		qcom,step-chg-ranges = <3000000 3100000 1000000
+					3101000 3200000 1000000
+					3201000 3300000 1000000
+					3301000 4200000 5100000
+					4201000 4400000 4000000>;
+	};
+
+	vph_pwr: vph-pwr-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "vph_pwr";
+		regulator-min-microvolt = <3700000>;
+		regulator-max-microvolt = <3700000>;
+	};
+
+	/*
+	 * RPMh does not model PM8150 S4 because it is always-on; describe it
+	 * as a fixed regulator like the other SM8150 boards do.
+	 */
+	vreg_s4a_1p8: pm8150-s4 {
+		compatible = "regulator-fixed";
+		regulator-name = "vreg_s4a_1p8";
+
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+
+		regulator-always-on;
+		regulator-boot-on;
+
+		vin-supply = <&vph_pwr>;
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		key-vol-up {
+			label = "Volume Up";
+			gpios = <&pm8150_gpios 6 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEUP>;
+		};
+	};
+
+	/*
+	 * The touch controller's two rails are load switches gated by TLMM
+	 * GPIOs, not PMIC regulators.  The Goodix driver asks for one supply
+	 * by name (goodix,avdd-name) and enables it around the power-on
+	 * sequence, so both switches are modelled as a single fixed
+	 * regulator.  3.3 V is the controlling rail and is enabled first;
+	 * the 1.8 V switch is left always-on because the controller has no
+	 * documented ordering requirement for it and it also feeds the
+	 * panel's I/O.
+	 */
+	ts_avdd_3p3: regulator-ts-avdd {
+		compatible = "regulator-fixed";
+		regulator-name = "ts_avdd_3p3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+
+		gpio = <&tlmm 98 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		regulator-boot-on;
+		regulator-always-on;
+	};
+
+	ts_vddio_1p8: regulator-ts-vddio {
+		compatible = "regulator-fixed";
+		regulator-name = "ts_vddio_1p8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+
+		gpio = <&tlmm 100 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		regulator-boot-on;
+		regulator-always-on;
+	};
+
+	/*
+	 * The AMOLED's 3.0 V source rail, gated by a load switch on
+	 * TLMM 99.
+	 */
+	disp_vci: regulator-disp-vci {
+		compatible = "regulator-fixed";
+		regulator-name = "disp_vci";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
+
+		gpio = <&tlmm 99 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		start-delay-us = <4000>;
+	};
+};
+
+&apps_rsc {
+	regulators-0 {
+		compatible = "qcom,pm8150-rpmh-regulators";
+		qcom,pmic-id = "a";
+
+		/*
+		 * The Project Mu UEFI on this device does not hand the RPMh
+		 * read channel to Linux.  A read times out after 10 s and leaves
+		 * the TCS busy, which breaks every later RPMh transaction
+		 * (including BCM votes).  Use the cached state instead.
+		 */
+		qcom,no-readback;
+
+		vdd-s1-supply = <&vph_pwr>;
+		vdd-s2-supply = <&vph_pwr>;
+		vdd-s3-supply = <&vph_pwr>;
+		vdd-s4-supply = <&vph_pwr>;
+		vdd-s5-supply = <&vph_pwr>;
+		vdd-s6-supply = <&vph_pwr>;
+		vdd-s7-supply = <&vph_pwr>;
+		vdd-s8-supply = <&vph_pwr>;
+		vdd-s9-supply = <&vph_pwr>;
+		vdd-s10-supply = <&vph_pwr>;
+
+		vdd-l1-l8-l11-supply = <&vreg_s6a_0p9>;
+		vdd-l2-l10-supply = <&vreg_bob>;
+		vdd-l3-l4-l5-l18-supply = <&vreg_s6a_0p9>;
+		vdd-l6-l9-supply = <&vreg_s8c_1p3>;
+		vdd-l7-l12-l14-l15-supply = <&vreg_s5a_2p0>;
+		vdd-l13-l16-l17-supply = <&vreg_bob>;
+
+		vreg_s5a_2p0: smps5 {
+			regulator-min-microvolt = <1904000>;
+			regulator-max-microvolt = <2000000>;
+		};
+
+		vreg_s6a_0p9: smps6 {
+			regulator-min-microvolt = <920000>;
+			regulator-max-microvolt = <1128000>;
+		};
+
+		vdda_wcss_pll:
+		vreg_l1a_0p75: ldo1 {
+			regulator-min-microvolt = <752000>;
+			regulator-max-microvolt = <752000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vdd_pdphy:
+		vdda_usb_hs_3p1:
+		vreg_l2a_3p1: ldo2 {
+			regulator-min-microvolt = <3072000>;
+			regulator-max-microvolt = <3072000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l3a_0p8: ldo3 {
+			regulator-min-microvolt = <480000>;
+			regulator-max-microvolt = <932000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vdd_usb_hs_core:
+		vdda_csi_0_0p9:
+		vdda_csi_1_0p9:
+		vdda_csi_2_0p9:
+		vdda_csi_3_0p9:
+		vdda_dsi_0_0p9:
+		vdda_dsi_1_0p9:
+		vdda_dsi_0_pll_0p9:
+		vdda_dsi_1_pll_0p9:
+		vdda_pcie_1ln_core:
+		vdda_pcie_2ln_core:
+		vdda_pll_hv_cc_ebi01:
+		vdda_pll_hv_cc_ebi23:
+		vdda_qrefs_0p875_5:
+		vdda_sp_sensor:
+		vdda_ufs_2ln_core_1:
+		vdda_ufs_2ln_core_2:
+		vdda_usb_ss_dp_core_1:
+		vdda_usb_ss_dp_core_2:
+		vdda_qlink_lv:
+		vdda_qlink_lv_ck:
+		vreg_l5a_0p875: ldo5 {
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <880000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l6a_1p2: ldo6 {
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l7a_1p8: ldo7 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vddpx_10:
+		vreg_l9a_1p2: ldo9 {
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
+		 * UFS VCC.  The generic SM8150 EVT/MTP boards describe the full
+		 * 2.504-2.960 V LDO10 range, but raphael wires this rail to the
+		 * UFS device as VREG_L10A_2P95 and expects 2.95 V.  mainline's
+		 * ufs-qcom never calls regulator_set_voltage(), so an open range
+		 * leaves the rail at the lower bound and the UFS device fails.
+		 */
+		vreg_l10a_2p5: ldo10 {
+			regulator-min-microvolt = <2950000>;
+			regulator-max-microvolt = <2960000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l11a_0p8: ldo11 {
+			regulator-min-microvolt = <800000>;
+			regulator-max-microvolt = <800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vdd_qfprom:
+		vdd_qfprom_sp:
+		vdda_apc_cs_1p8:
+		vdda_gfx_cs_1p8:
+		vdda_usb_hs_1p8:
+		vdda_qrefs_vref_1p8:
+		vddpx_10_a:
+		vreg_l12a_1p8: ldo12 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l13a_2p7: ldo13 {
+			regulator-min-microvolt = <2704000>;
+			regulator-max-microvolt = <2704000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l14a_1p8: ldo14 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1880000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l15a_1p7: ldo15 {
+			regulator-min-microvolt = <1704000>;
+			regulator-max-microvolt = <1704000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l16a_2p7: ldo16 {
+			regulator-min-microvolt = <2704000>;
+			regulator-max-microvolt = <2960000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l17a_3p0: ldo17 {
+			regulator-min-microvolt = <2856000>;
+			regulator-max-microvolt = <3008000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	regulators-1 {
+		compatible = "qcom,pm8150l-rpmh-regulators";
+		qcom,pmic-id = "c";
+		qcom,no-readback;
+
+		vdd-s1-supply = <&vph_pwr>;
+		vdd-s2-supply = <&vph_pwr>;
+		vdd-s3-supply = <&vph_pwr>;
+		vdd-s4-supply = <&vph_pwr>;
+		vdd-s5-supply = <&vph_pwr>;
+		vdd-s6-supply = <&vph_pwr>;
+		vdd-s7-supply = <&vph_pwr>;
+		vdd-s8-supply = <&vph_pwr>;
+
+		vdd-l1-l8-supply = <&vreg_s4a_1p8>;
+		vdd-l2-l3-supply = <&vreg_s8c_1p3>;
+		vdd-l4-l5-l6-supply = <&vreg_bob>;
+		vdd-l7-l11-supply = <&vreg_bob>;
+		vdd-l9-l10-supply = <&vreg_bob>;
+
+		vdd-bob-supply = <&vph_pwr>;
+		vdd-flash-supply = <&vreg_bob>;
+		vdd-rgb-supply = <&vreg_bob>;
+
+		vreg_bob: bob {
+			regulator-min-microvolt = <3008000>;
+			regulator-max-microvolt = <4000000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_AUTO>;
+			regulator-allow-bypass;
+		};
+
+		vreg_s8c_1p3: smps8 {
+			regulator-min-microvolt = <1352000>;
+			regulator-max-microvolt = <1352000>;
+		};
+
+		vreg_l1c_1p8: ldo1 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vdda_wcss_adcdac_1:
+		vdda_wcss_adcdac_22:
+		vreg_l2c_1p3: ldo2 {
+			regulator-min-microvolt = <1304000>;
+			regulator-max-microvolt = <1304000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vdda_hv_ebi0:
+		vdda_hv_ebi1:
+		vdda_hv_ebi2:
+		vdda_hv_ebi3:
+		vdda_hv_refgen0:
+		vdda_qlink_hv_ck:
+		vreg_l3c_1p2: ldo3 {
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vddpx_5:
+		vreg_l4c_1p8: ldo4 {
+			regulator-min-microvolt = <1704000>;
+			regulator-max-microvolt = <2928000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vddpx_6:
+		vreg_l5c_1p8: ldo5 {
+			regulator-min-microvolt = <1704000>;
+			regulator-max-microvolt = <2928000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vddpx_2:
+		vreg_l6c_2p9: ldo6 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <2960000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l7c_3p0: ldo7 {
+			regulator-min-microvolt = <2856000>;
+			regulator-max-microvolt = <3104000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l8c_1p8: ldo8 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l9c_2p9: ldo9 {
+			regulator-min-microvolt = <2704000>;
+			regulator-max-microvolt = <2960000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l10c_3p3: ldo10 {
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3312000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
+		 * VDD_CH0: the WCN3990 PA / RF chain rail.  Stock runs it
+		 * at 3.312 V whenever the BT half is powered
+		 * (bt-vdd-ldo-voltage-level) and allows 3.104-3.312 V on
+		 * the WLAN side (qcom,vdd-3.3-ch0-config).  The 3.0 V
+		 * minimum here made the enabled rail sit below the stock
+		 * floor.  hci_qca keeps the BT half powered from boot on,
+		 * so this board is always in the stock 3.312 V case; pin
+		 * the rail to that.
+		 */
+		vreg_l11c_3p3: ldo11 {
+			regulator-min-microvolt = <3312000>;
+			regulator-max-microvolt = <3312000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	/*
+	 * No PM8009 here.  The cmd-db the bootloader hands over carries ldo
+	 * and smp resources for PM8150 ("a") and PM8150L ("c") only; the
+	 * PM8009 class uses the "f" suffix and none of those exist, so a
+	 * pm8009-rpmh-regulators node cannot resolve the rails it declares:
+	 *
+	 *   qcom-rpmh-regulator 18200000.rsc:regulators-2: ldo2: could not
+	 *   find RPMh address for resource ldof2
+	 *
+	 * The vendor tree agrees: raphael references pm8150, pm8150l and
+	 * pm8150b, never pm8009.
+	 */
+};
+
+/*
+ * The ADSP runs the audio DSP firmware and is the master of the SLIMbus
+ * instance the WCD9340 codec hangs off, so it has to be up for anything on
+ * the sound card to work.
+ *
+ * The image is the split PIL firmware from the phone's modem partition
+ * (adsp.mdt + adsp.bXX) squashed into a single .mbn with pil-squasher, the
+ * same way the modem and SLPI images below are handled; adspr.jsn and
+ * adspua.jsn are the audio calibration files the ADSP asks for at runtime
+ * and sit next to it.
+ */
+&remoteproc_adsp {
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/adsp.mbn";
+	status = "okay";
+};
+
+/*
+ * The CDSP only serves the compute DSP (fastrpc) workloads and is not
+ * needed for the hardware this board is being brought up with, so leave it
+ * off; probing it would only add a firmware timeout to the boot.
+ */
+&remoteproc_cdsp {
+	status = "disabled";
+};
+
+&remoteproc_mpss {
+	/*
+	 * The WLAN/BT firmware (wlanmdsp.mbn) is fetched and started by the
+	 * modem processor, so the modem has to run for WiFi to work.  The
+	 * modem image from the phone's modem partition is squashed into a
+	 * single .mbn and installed in the qcom/<soc>/<vendor>/<model>
+	 * firmware layout used upstream for device-signed images (like
+	 * qcom/glymur/ASUSTeK/UX3607OA/), next to the WLAN image it serves;
+	 * tqftpserv resolves the modem's file requests relative to this
+	 * firmware-name.
+	 */
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/modem.mbn";
+	status = "okay";
+};
+
+&remoteproc_slpi {
+	/*
+	 * The sensor low-power island firmware is the usual split PIL
+	 * image on the modem partition (slpi_rp.mdt + slpi_rp.bXX),
+	 * squashed into a single .mbn with pil-squasher like the modem
+	 * image above; slpir.jsn / slpius.jsn, the sensor registry files
+	 * the SLPI requests at runtime, sit next to it.  The SLPI owns
+	 * the accelerometer, gyroscope, proximity and light sensors.
+	 */
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/slpi_rp.mbn";
+	status = "okay";
+};
+
+/*
+ * IPA carries the mobile data path: the modem hands AP-bound packets to
+ * this block, which delivers them to the net device the driver registers
+ * as rmnet_ipa0.  Without it the modem's control plane still works (SIM,
+ * SMS, calls, QMI) but there is no net device for data, which is what
+ * makes ModemManager give up with "Failed to find a net port".
+ *
+ * The firmware is a split PIL image in the vendor partition, not the
+ * modem partition: ipa_fws.mdt plus ipa_fws.bXX, squashed into a single
+ * .mbn with pil-squasher.  The trust zone authenticates it under PAS id
+ * 15, and it is the AP that loads it, which is what qcom,gsi-loader =
+ * "self" selects.
+ */
+&ipa {
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/ipa_fws.mbn";
+	status = "okay";
+};
+
+&wifi {
+	status = "okay";
+
+	/*
+	 * No local-mac-address on purpose.  The factory never provisioned a
+	 * WLAN address on this board: /vendor/firmware/wlan/qca_cld/
+	 * wlan_mac.bin is a symlink to /mnt/vendor/persist/wlan/wlan_mac.bin
+	 * and that file, nor the directory, exists.  So there is nothing to
+	 * read and ath10k falls back to a random address:
+	 *
+	 *   ath10k_snoc 18800000.wifi: invalid MAC address; choosing random
+	 *
+	 * bootmac@wlan.service then assigns a stable per-device address
+	 * derived from the serial number, and NetworkManager is told to keep
+	 * it (wifi.cloned-mac-address=preserve).  That happens after the PHY
+	 * is up, which is why the warning above stays in the log.
+	 */
+	vdd-0.8-cx-mx-supply = <&vreg_l1a_0p75>;
+	vdd-1.8-xo-supply = <&vreg_l7a_1p8>;
+	vdd-1.3-rfa-supply = <&vreg_l2c_1p3>;
+	vdd-3.3-ch0-supply = <&vreg_l11c_3p3>;
+	/*
+	 * The WCN3990 has two 3.3 V inputs, ch0 and ch1, and this board ties
+	 * both to the same rail: the vendor tree names only l11c and gives it
+	 * a single qcom,vdd-3.3-ch0-config, with no separate ch1 supply
+	 * anywhere.  ath10k asks for both by name, so leaving ch1 out made
+	 * the bulk fetch fall back to a dummy regulator and complain once per
+	 * boot:
+	 *
+	 *   ath10k_snoc 18800000.wifi: supply vdd-3.3-ch1 not found,
+	 *     using dummy regulator
+	 *
+	 * Pointing ch1 at the same rail reflects the wiring, and the shared
+	 * enable is what the hardware already expects.
+	 */
+	vdd-3.3-ch1-supply = <&vreg_l11c_3p3>;
+};
+
+&pon_pwrkey {
+	status = "okay";
+};
+
+/*
+ * Power key fallbacks, so the phone can be recovered from Linux itself:
+ * holding volume-down while pressing power enters fastboot, volume-up
+ * enters recovery.  Without these the only way out of a bad boot is a
+ * long power-key press plus a physical key combination at the right moment.
+ */
+&pon {
+	mode-bootloader = <0x2>;
+	mode-recovery = <0x1>;
+};
+
+&pon_resin {
+	status = "okay";
+
+	linux,code = <KEY_VOLUMEDOWN>;
+};
+
+/*
+ * Bluetooth.  The BT half of the WCN3990 hangs off QUPv3 SE13 in 4-wire
+ * UART mode with hardware flow control (gpio43-46); this is the port the
+ * vendor tree aliases as "hsuart0" and gives the BT in-band-sleep wakeup
+ * byte.  SE12 (uart2) is the plain debug UART and has no BT behind it.
+ */
+&uart13 {
+	status = "okay";
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&qup_uart13_4pin>;
+
+	bluetooth {
+		compatible = "qcom,wcn3990-bt";
+
+		/*
+		 * NVM config first, rampatch second; both relative to the
+		 * qca/ subdir under lib/firmware.  The board-id variant
+		 * lookup (stem form) is a dead end on this ROM (0x1001):
+		 * qca_read_fw_board_id times out and wedges the controller,
+		 * so the names are pinned with their extensions -- same
+		 * reasoning as the ath10k side (board_id 0xff = use the
+		 * plain board file).
+		 *
+		 * No local-bd-address on purpose: this DTS is shared by
+		 * every K20 Pro and the factory BD address is per-device.
+		 * It is provisioned at runtime from the modem NV store
+		 * (QMI DMS) via MGMT_OP_SET_PUBLIC_ADDRESS; see the
+		 * raphael-macaddr service in the k20pro-linux repo.
+		 */
+		firmware-name = "crnv21.bin", "crbtfw21.tlv";
+
+		vddio-supply = <&vreg_l7a_1p8>;
+		vddxo-supply = <&vreg_l7a_1p8>;
+		vddrf-supply = <&vreg_l2c_1p3>;
+		vddch0-supply = <&vreg_l11c_3p3>;
+
+		max-speed = <3200000>;
+	};
+};
+
+/*
+ * SE12 is the plain debug UART behind serial0/stdout-path.  It keeps the
+ * qcom,geni-debug-uart compatible from sm8150.dtsi on purpose: that is the
+ * one whose match data makes the driver register the ttyMSM console, which
+ * is what console=ttyMSM0 on the kernel command line names.  With a plain
+ * qcom,geni-uart the port shows up as ttyHS0 instead and the console is
+ * never registered, which leaves /proc/consoles empty and makes
+ * plymouthd die on it.
+ */
+&uart2 {
+	status = "okay";
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&qup_uart12_default>;
+};
+/*
+ * GPIOs 0-3 and 126-129 are reserved for the bootloader/secure world; the
+ * kernel must not drive them.  Same ranges the other SM8150 boards use.
+ */
+&tlmm {
+	gpio-reserved-ranges = <0 4>, <126 4>;
+
+	/*
+	 * QUPv3 SE12 in 2-wire UART mode: the debug UART on the debug
+	 * header (gpio85/86), muxed to "qup12" at 2 mA like the vendor tree.
+	 */
+	qup_uart12_default: qup-uart12-default-state {
+		pins = "gpio85", "gpio86";
+		function = "qup12";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	/*
+	 * QUPv3 SE13 in 4-wire UART mode: the BT half of the WCN3990.  The
+	 * vendor tree splits this over three states (ctsrx/rts/tx) with the
+	 * biases below; the SoC file only describes the SE13 I2C/SPI muxing.
+	 */
+	qup_uart13_4pin: qup-uart13-4pin-state {
+		qup_uart13_cts_rx: cts-rx-pins {
+			pins = "gpio43", "gpio46";
+			function = "qup13";
+			drive-strength = <2>;
+			bias-disable;
+		};
+
+		qup_uart13_rts: rts-pins {
+			pins = "gpio44";
+			function = "qup13";
+			drive-strength = <2>;
+			bias-pull-down;
+		};
+
+		qup_uart13_tx: tx-pins {
+			pins = "gpio45";
+			function = "qup13";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+
+	/*
+	 * Touch IRQ and reset.  The vendor tree drives both at 16 mA with a
+	 * pull-up on the active state; keep that, since the controller
+	 * samples the IRQ line during reset to pick its I2C address.
+	 */
+	ts_int_reset_default: ts-int-reset-default-state {
+		pins = "gpio122", "gpio54";
+		function = "gpio";
+		drive-strength = <16>;
+		bias-pull-up;
+	};
+
+	ts_int_suspend: ts-int-suspend-state {
+		pins = "gpio122";
+		function = "gpio";
+		drive-strength = <16>;
+		bias-pull-up;
+	};
+
+	ts_reset_suspend: ts-reset-suspend-state {
+		pins = "gpio54";
+		function = "gpio";
+		drive-strength = <16>;
+		bias-disable;
+		output-high;
+	};
+
+	/*
+	 * The panel's TE signal, wired to the display subsystem's vsync
+	 * input on TLMM 8.  The DPU paces command mode transfers on it in
+	 * hardware; the vendor tree muxes it at 2 mA with a pull-down in
+	 * both the active and the suspend state.
+	 */
+	disp_te_default: disp-te-default-state {
+		pins = "gpio8";
+		function = "mdp_vsync";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	/*
+	 * WCD9340 interrupt line, CODEC_INT1_N on TLMM 123.  The vendor tree
+	 * pulls it down and leaves it as an input, which matches the codec
+	 * driving it low when it has something to report.
+	 */
+	wcd_intr_default: wcd-intr-default-state {
+		pins = "gpio123";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+		input-enable;
+	};
+
+	/*
+	 * TFA9874 control lines.  GPIO59 is SPKR_PA_RST, wired straight to
+	 * the amplifier's RST pin; GPIO141 is SPKR_INT.  The reset line is
+	 * driven low here so that the amplifier is out of reset as soon as
+	 * pinctrl is applied, and the driver pulses it again at probe time.
+	 */
+	spkr_int_default: spkr-int-default-state {
+		pins = "gpio141";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+		input-enable;
+	};
+
+	spkr_rst_default: spkr-rst-default-state {
+		pins = "gpio59";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-low;
+	};
+};
+
+/*
+ * QUPv3 serial engines.
+ *
+ * All three GENI wrappers have to be enabled, not just the one whose SE a
+ * given peripheral sits on: of_platform_populate() skips the children of a
+ * disabled node, so a disabled wrapper produces no platform device for its
+ * i2c/spi/uart children and they never probe.
+ *
+ * The three wrappers cover:
+ *   wrap 0 (0x8c0000)  se0-se7     magnetometer (se4), BT SPI (se3),
+ *                                 SMB1390 charge pump (se4)
+ *   wrap 1 (0xac0000)  se8-se12    BT HCI UART (se12)
+ *   wrap 2 (0xcc0000)  se13-se19   touchscreen (se19)
+ *
+ * The individual SE nodes are left disabled here and enabled by whatever
+ * peripheral needs them, so this file does not claim buses nobody uses.
+ *
+ * Note these nodes carry no "interconnects" property.  That is fine:
+ * of_icc_get() returns a NULL path when the property is absent and the
+ * GENI driver treats that as "no constraint to vote on".
+ */
+&qupv3_id_0 {
+	status = "okay";
+};
+
+&qupv3_id_1 {
+	status = "okay";
+};
+
+&qupv3_id_2 {
+	status = "okay";
+};
+
+/*
+ * The rear camera's flash sits on the PM8150L flash LED block.  The vendor
+ * tree wires both of its LED channels to the one physical emitter and gangs
+ * them through switch 2 (led-mask 3), so that is how they are described here:
+ * a single LED fed by two sources, which is what the mainline driver expects
+ * for a multi-channel flash (it splits the requested current across them).
+ *
+ * Currents come from the vendor tree: 1500 mA per channel for a flash and
+ * 500 mA per channel for the torch, which the ganged pair turns into the
+ * 2000 mA and 1000 mA limits below.  The registers are the PM8150 variant of
+ * the block rather than the PMI8998 one; the driver tells them apart by
+ * reading the subtype at probe time.
+ */
+&pm8150l_flash {
+	status = "okay";
+
+	led-0 {
+		function = LED_FUNCTION_FLASH;
+		color = <LED_COLOR_ID_WHITE>;
+		led-sources = <1 2>;
+		led-max-microamp = <1000000>;
+		flash-max-microamp = <2000000>;
+		flash-max-timeout-us = <1280000>;
+	};
+};
+
+/*
+ * The SMB1390 switched-capacitor charge pump sits on SE4 at address 0x10,
+ * as in the vendor tree.  Its fault output is wired to PM8150B gpio6 (the
+ * vendor's "smb_stat" pin) and reports low; the chip's own interrupt
+ * block says which protection tripped.  The pump offers its switcher as a
+ * regulator for the charger to arm, see qcom,smb1390.
+ */
+&i2c4 {
+	status = "okay";
+
+	clock-frequency = <400000>;
+
+	smb1390: charge-pump@10 {
+		compatible = "qcom,smb1390";
+		reg = <0x10>;
+
+		interrupt-parent = <&pm8150b_gpios>;
+		interrupts = <6 IRQ_TYPE_LEVEL_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&smb_stat_default>;
+
+		regulator-min-microamp = <500000>;
+		regulator-max-microamp = <3600000>;
+	};
+};
+
+/*
+ * The touchscreen sits on SE19 of wrapper 2.  Only the SE this board
+ * actually populates is enabled; the rest stay disabled so the kernel does
+ * not claim buses nobody wired up.
+ */
+&i2c19 {
+	status = "okay";
+
+	clock-frequency = <400000>;
+
+	/*
+	 * Goodix GT9886.  The vendor tree labels the panel "gt9889" in its
+	 * own DTS, but every firmware and config file it ships is named
+	 * goodix_gt9886_*, and the vendor driver matches both strings.
+	 *
+	 * IRQ is GPIO 122 (falling edge) and reset is GPIO 54.  Both are
+	 * handled by the driver through the gpiod API, so the node uses the
+	 * plain -gpios suffix rather than the vendor's goodix,*-gpio.
+	 */
+	touchscreen@5d {
+		compatible = "goodix,gt9886";
+		reg = <0x5d>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <122 IRQ_TYPE_EDGE_FALLING>;
+		goodix,irq-flags = <2>;			/* falling edge */
+
+		reset-gpios = <&tlmm 54 GPIO_ACTIVE_HIGH>;
+		irq-gpios = <&tlmm 122 GPIO_ACTIVE_HIGH>;
+
+		goodix,avdd-name = "ts_avdd_3p3";
+
+		goodix,panel-max-x = <1079>;
+		goodix,panel-max-y = <2339>;
+		goodix,panel-max-w = <255>;
+		goodix,panel-max-p = <255>;
+
+		goodix,power-on-delay-us = <300000>;
+		goodix,power-off-delay-us = <5000>;
+		goodix,fw-name = "goodix_gt9886_fw_f11.bin";
+		goodix,cfg-name = "goodix_gt9886_cfg_f11.bin";
+
+		pinctrl-names = "pmx_ts_active", "pmx_ts_suspend";
+		pinctrl-0 = <&ts_int_reset_default>;
+		pinctrl-1 = <&ts_int_suspend>, <&ts_reset_suspend>;
+	};
+};
+
+/*
+ * Storage.
+ *
+ * The UFS device (WDC SDINDDH4 / iNAND 8521, UFS 2.1) becomes unusable once
+ * the QMP UFS PHY has been powered down at runtime: the PHY is only
+ * programmed from the HCE-enable path, so a later hibern8 exit returns a PA
+ * fatal error and every following transfer fails with -EIO.  Keep clock
+ * gating, clock scaling and runtime autosuspend off until the PHY driver can
+ * re-calibrate on every power-on.
+ */
+&ufs_mem_hc {
+	status = "okay";
+
+	vcc-supply = <&vreg_l10a_2p5>;
+	vcc-max-microamp = <750000>;
+	vccq-supply = <&vreg_l5a_0p875>;
+	vccq-max-microamp = <1000000>;
+	vccq2-supply = <&vreg_s4a_1p8>;
+	vccq2-max-microamp = <750000>;
+
+	/*
+	 * The UFS device reset line.  tlmm gpio 175, active low.  It was part
+	 * of the DTB that has been running on the phone all along, so keep it.
+	 */
+	reset-gpios = <&tlmm 175 GPIO_ACTIVE_LOW>;
+
+	qcom,no-runtime-pm;
+};
+
+&ufs_mem_phy {
+	status = "okay";
+
+	vdda-phy-supply = <&vdda_ufs_2ln_core_1>;
+	vdda-pll-supply = <&vreg_l3c_1p2>;
+};
+
+/*
+ * USB.  The board wires up only the 2.0 high-speed PHY: the USB3/DP combo
+ * PHY is not populated for this product, so the port tops out at 480 Mbps
+ * and has no DisplayPort alt-mode.  Leaving the combo PHY in the DWC3 PHY
+ * list makes the controller defer forever, so only the HS PHY is listed.
+ *
+ * Without the combo PHY there is no PIPE clock, which is what the controller
+ * clocks its device-side endpoint commands from; leaving it to the QMP PHY
+ * makes every DEPCFG command time out and the gadget never enumerates.  Let
+ * the wrapper take the UTMI clock as the PIPE clock instead.
+ *
+ * The port is dual-role.  The PM8150B Type-C controller watches CC and
+ * drives the role switch, so a charger or a PC leaves the port in device
+ * mode (which is what the debug console and the network link need) while a
+ * dock flips it to host mode.  The role switch lives on the DWC3 node, and
+ * tcpm reaches it through the graph link from the connector below.
+ */
+&usb_1 {
+	qcom,select-utmi-as-pipe-clk;
+
+	status = "okay";
+};
+
+&usb_1_dwc3 {
+	dr_mode = "otg";
+	maximum-speed = "high-speed";
+	phys = <&usb_1_hsphy>;
+	phy-names = "usb2-phy";
+	usb-role-switch;
+};
+
+/*
+ * The HS PHY's port links the controller to the Type-C connector so that
+ * tcpm can find the role switch through the graph.
+ */
+&usb_1_dwc3_hs {
+	remote-endpoint = <&pm8150b_hs_in>;
+};
+
+&usb_1_hsphy {
+	status = "okay";
+
+	vdda-pll-supply = <&vdd_usb_hs_core>;
+	vdda33-supply = <&vdda_usb_hs_3p1>;
+	vdda18-supply = <&vdda_usb_hs_1p8>;
+};
+
+/*
+ * The combo PHY stays disabled (see above) but still needs its supplies
+ * described, because the PHY driver reads them before it looks at status.
+ */
+&usb_1_qmpphy {
+	status = "disabled";
+
+	vdda-phy-supply = <&vreg_l5a_0p875>;
+	vdda-pll-supply = <&vreg_l12a_1p8>;
+};
+
+/*
+ * PM8150B Type-C port controller.
+ *
+ * The port is a dual-role port and the CC pins are wired to the PMIC, not
+ * to a GPIO: this is a Type-C socket with no ID pin, so the old extcon
+ * cable-detection model does not apply.  tcpm runs the CC state machine on
+ * top of the PM8150B port block and drives the DWC3 role switch through the
+ * graph link below, which is what makes the port follow whatever is
+ * plugged in.
+ *
+ * "sink" is the preferred role, so a charger or a PC keeps the port in
+ * device mode and the gadget (the debug console and the network link) comes
+ * up as it always has.  A dock's upstream port is a sink, so when one is
+ * attached this tries sink first, sees nothing, flips to source and comes
+ * up as a USB 2.0 host with the dock's devices behind it.
+ *
+ * self-powered because the phone runs off its own battery; the VBUS
+ * regulator is only enabled while the port actually acts as a source.
+ */
+&pm8150b_typec {
+	status = "okay";
+
+	vdd-pdphy-supply = <&vreg_l2a_3p1>;
+
+	connector {
+		compatible = "usb-c-connector";
+
+		power-role = "dual";
+		data-role = "dual";
+		try-power-role = "sink";
+		self-powered;
+
+		/*
+		 * tcpm refuses a sink-capable port that does not state how
+		 * much power it draws as a sink, so this is not optional
+		 * once sink-pdos is given.
+		 */
+		op-sink-microwatt = <10000000>;
+
+		vbus-supply = <&pm8150b_vbus>;
+
+		source-pdos = <PDO_FIXED(5000, 3000,
+					 PDO_FIXED_DUAL_ROLE |
+					 PDO_FIXED_USB_COMM |
+					 PDO_FIXED_DATA_SWAP)>;
+
+		sink-pdos = <PDO_FIXED(5000, 3000,
+				       PDO_FIXED_DUAL_ROLE |
+				       PDO_FIXED_USB_COMM |
+				       PDO_FIXED_DATA_SWAP)
+				       PDO_VAR(5000, 9000, 3000)>;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				pm8150b_hs_in: endpoint {
+					remote-endpoint = <&usb_1_dwc3_hs>;
+				};
+			};
+		};
+	};
+};
+
+/*
+ * The PM8150B's own OTG boost, which is what feeds VBUS to the dock while
+ * the port is a host.  The board also has an external boost on PM8150B
+ * gpio12, but the vendor leaves that one disabled on this product, so the
+ * internal supply is the one described.
+ */
+&pm8150b_vbus {
+	regulator-min-microamp = <500000>;
+	regulator-max-microamp = <3000000>;
+
+	status = "okay";
+};
+
+/*
+ * PM8150B gpio6 is the SMB1390 charge pump's fault wire, pulled up and
+ * left as an input; the vendor calls the pin smb_stat.
+ */
+&pm8150b_gpios {
+	smb_stat_default: smb-stat-default-state {
+		pins = "gpio6";
+		function = "normal";
+		input-enable;
+		bias-pull-up;
+		qcom,pull-up-strength = <PMIC_GPIO_PULL_UP_30>;
+		power-source = <0>;
+	};
+};
+
+/*
+ * The vibration actuator is wired straight to PM8150B's H-bridge, on the
+ * HAP_OUT_P/HAP_OUT_M pair.  It is an ERM, a rotating mass driven by a DC
+ * level, so only the drive voltage has to be described.
+ */
+&pm8150b_haptics {
+	status = "okay";
+
+	qcom,vmax-microvolt = <3000000>;
+};
+
+/*
+ * PM8150B SMB5 charger and GEN4 fuel gauge.
+ *
+ * The float voltage comes from the battery description above and is the
+ * battery's 4.4 V maximum, which is the primary over-charge protection:
+ * the hardware stops charging there whatever the software does.  The input
+ * current limit is deliberately left to the charger's own source detection,
+ * so a plain USB port is never asked for more than it advertised.
+ */
+&pm8150b_charger {
+	status = "okay";
+
+	monitored-battery = <&battery>;
+
+	/*
+	 * The SMB1390 charge pump on SE4 takes the charge path over from
+	 * the buck converter at the 9 V input class; the charger arms it
+	 * through this regulator.
+	 */
+	charge-pump-supply = <&smb1390>;
+
+	/*
+	 * The measured input voltage.  The QC class says what was asked of
+	 * the adapter; this says what the wire really carries, and the
+	 * charge pump is only started on the two agreeing.
+	 */
+	io-channels = <&pm8150b_adc ADC5_USB_IN_V_16>;
+	io-channel-names = "vbus";
+
+	/*
+	 * BC1.2 and the QC handshake watch and drive the very D+/D- pair the
+	 * USB gadget uses, so the charger takes the pair (leaving it floating)
+	 * for as long as it needs it.  The HS PHY's "dpdm" regulator is what
+	 * hands it over; a source that turns out to be a host gets the pair
+	 * back for the gadget.
+	 */
+	dpdm-supply = <&usb_1_hsphy>;
+};
+
+/*
+ * The panel is a Samsung EA8076 AMOLED (1080x2340) on DSI 0.  The
+ * bootloader brings the pipeline up and leaves it scanning, but nothing
+ * in Linux owns the display and the picture falls apart into the panel's
+ * no-signal pattern once the system is up.  Take the DPU, the DSI
+ * controller and its PHY over from here and let the panel driver finish
+ * the job through the DSI host.
+ */
+&mdss {
+	status = "okay";
+};
+
+&mdss_dsi0 {
+	status = "okay";
+
+	vdda-supply = <&vreg_l3c_1p2>;
+
+	/*
+	 * The msm DSI host picks its pinctrl states when the link is
+	 * powered; both states are the TE pin kept at the display
+	 * subsystem's vsync input.
+	 */
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&disp_te_default>;
+	pinctrl-1 = <&disp_te_default>;
+
+	panel@0 {
+		compatible = "samsung,ea8076";
+		reg = <0>;
+
+		vddio-supply = <&vreg_l14a_1p8>;
+		vcie-supply = <&disp_vci>;
+
+		reset-gpios = <&tlmm 6 GPIO_ACTIVE_LOW>;
+
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&mdss_dsi0_out>;
+			};
+		};
+	};
+};
+
+&mdss_dsi0_out {
+	remote-endpoint = <&panel_in>;
+	data-lanes = <0 1 2 3>;
+};
+
+&mdss_dsi0_phy {
+	status = "okay";
+
+	vdds-supply = <&vreg_l5a_0p875>;
+};
+
+/*
+ * The PM8150 RTC's write channel is not owned by the APPS CPU (the PMIC
+ * arbiter denies the SPMI writes), so the free-running counter can never
+ * be programmed.  Use the driver's offset storage instead: the counter
+ * free-runs and the offset between it and wall time lives in the
+ * battery-backed SDAM.  This is plain hardware storage, so hctosys sets
+ * the right time at boot and hwclock works, with no bootloader or
+ * userspace involvement.
+ */
+&pm8150_sdam_b6 {
+	rtc_offset: offset@48 {
+		reg = <0x48 0x4>;
+	};
+};
+
+&pm8150_rtc {
+	nvmem-cells = <&rtc_offset>;
+	nvmem-cell-names = "offset";
+};
+
+/*
+ * Adreno 640 GPU with GMU.  Three pieces of firmware are needed and all
+ * of them come from the device's own vendor partition: the SQE microcode
+ * (a630_sqe.fw), the GMU firmware (a640_gmu.bin) and the signed zap
+ * shader.  The zap shader is loaded through PAS into the secure world
+ * and uses the CP to switch the GPU out of secure mode; without it the
+ * driver would have to poke RBBM_SECVID_TRUST_CNTL itself, which the
+ * secure world blocks on this device.  The split mdt/bXX zap image is
+ * packed into a single .mbn with pil-squasher, upstream linux-firmware
+ * style.
+ */
+&gmu {
+	status = "okay";
+};
+
+&gpu {
+	status = "okay";
+};
+
+&gpu_zap_shader {
+	firmware-name = "qcom/sm8150/Xiaomi/raphael/a640_zap.mbn";
+};
+
+/*
+ * The Android bootloader leaves the splash screen it drew in a fixed
+ * 36 MiB frame at 0x9c000000.  Upstream sm8150.dtsi does not describe the
+ * region, so the page allocator would hand that range out as ordinary RAM
+ * even though the display controller may still be scanning out of it.
+ *
+ * The vendor tree keeps cont_splash_region@9c000000 at the same address and
+ * size, so reserve it here too.
+ *
+ * This does not silence the burst of translation faults that shows up right
+ * after the DRM device is registered:
+ *
+ *   arm-smmu 15000000.iommu: Unhandled context fault: fsr=0x402,
+ *     iova=0x9c000400, ... cbfrsynra=0xc20
+ *
+ * Those are the bootloader's scanout being read during the window before
+ * msm_kms.c installs its fault handler, and before the DPU reprograms the
+ * pipe.  All ten land within 15 ms of each other and never repeat, and the
+ * display comes up correctly afterwards, so they are noise rather than a
+ * live fault.  The iommu-addresses trick the Exynos boards use does not
+ * apply: msm builds a paging domain with iommu_paging_domain_alloc(), which
+ * does not honour IOMMU_RESV_DIRECT, and a plain reservation does not stop
+ * the hardware from issuing the reads.
+ */
+&{/reserved-memory} {
+	cont_splash_mem: memory@9c000000 {
+		reg = <0x0 0x9c000000 0x0 0x02400000>;
+		no-map;
+	};
+};
+
+/*
+ * Audio.
+ *
+ * The WCD9340 hangs off the SLIMbus instance the ADSP masters; it drives
+ * the earpiece, the headphones and both microphone inputs.  The speaker is
+ * a TFA9874 class-D amplifier on the quaternary MI2S, controlled over I2C1
+ * (the vendor's SE1) with its RST line on TLMM 59.
+ */
+&slimbam {
+	status = "okay";
+};
+
+&slim {
+	status = "okay";
+
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&lpass_slimbus_active>;
+	pinctrl-1 = <&lpass_slimbus_sleep>;
+
+	slim@1 {
+		reg = <1>;
+		#address-cells = <2>;
+		#size-cells = <0>;
+
+		wcd9340_ifd: ifd@0,0 {
+			compatible = "slim217,250";
+			reg = <0 0>;
+		};
+
+		wcd9340: codec@1,0 {
+			compatible = "slim217,250";
+			reg = <1 0>;
+			slim-ifc-dev = <&wcd9340_ifd>;
+
+			#sound-dai-cells = <1>;
+
+			interrupts-extended = <&tlmm 123 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-controller;
+			#interrupt-cells = <1>;
+
+			clock-names = "extclk";
+			clocks = <&rpmhcc RPMH_LN_BB_CLK2>;
+
+			#clock-cells = <0>;
+			clock-frequency = <9600000>;
+			clock-output-names = "mclk";
+
+			pinctrl-names = "default";
+			pinctrl-0 = <&wcd_intr_default>;
+
+			reset-gpios = <&tlmm 143 GPIO_ACTIVE_HIGH>;
+
+			vdd-buck-supply = <&vreg_s4a_1p8>;
+			vdd-buck-sido-supply = <&vreg_s4a_1p8>;
+			vdd-tx-supply = <&vreg_s4a_1p8>;
+			vdd-rx-supply = <&vreg_s4a_1p8>;
+			vdd-io-supply = <&vreg_s4a_1p8>;
+
+			qcom,micbias1-microvolt = <2700000>;
+			qcom,micbias2-microvolt = <1800000>;
+			qcom,micbias3-microvolt = <2700000>;
+			qcom,micbias4-microvolt = <2700000>;
+
+			qcom,mbhc-buttons-vthreshold-microvolt =
+				<75000 150000 237000 500000
+				 500000 500000 500000 500000>;
+		};
+	};
+};
+
+&i2c1 {
+	status = "okay";
+
+	clock-frequency = <400000>;
+
+	tfa9874: amplifier@34 {
+		compatible = "nxp,tfa9874";
+		reg = <0x34>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&spkr_int_default>, <&spkr_rst_default>;
+
+		reset-gpios = <&tlmm 59 GPIO_ACTIVE_HIGH>;
+
+		#sound-dai-cells = <0>;
+	};
+};
+
+&q6afedai {
+	dai@22 {
+		reg = <QUATERNARY_MI2S_RX>;
+		qcom,sd-lines = <0>;
+	};
+};
+
+&q6asmdai {
+	dai@0 {
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
+	};
+
+	dai@1 {
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>;
+	};
+
+	dai@2 {
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA3>;
+	};
+
+	dai@3 {
+		reg = <MSM_FRONTEND_DAI_MULTIMEDIA4>;
+	};
+};
+
+&sound {
+	compatible = "qcom,sm8150-sndcard";
+	model = "Xiaomi Redmi K20 Pro";
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&qua_mi2s_active>;
+
+	audio-routing =
+		"RX_BIAS", "MCLK",
+		"AMIC1", "MIC BIAS1",
+		"AMIC2", "MIC BIAS2",
+		"AMIC3", "MIC BIAS3",
+		"Headphone Jack", "HPHL",
+		"Headphone Jack", "HPHR";
+
+	mm1-dai-link {
+		link-name = "MultiMedia1";
+		cpu {
+			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA1>;
+		};
+	};
+
+	mm2-dai-link {
+		link-name = "MultiMedia2";
+		cpu {
+			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA2>;
+		};
+	};
+
+	mm3-dai-link {
+		link-name = "MultiMedia3";
+		cpu {
+			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA3>;
+		};
+	};
+
+	mm4-dai-link {
+		link-name = "MultiMedia4";
+		cpu {
+			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA4>;
+		};
+	};
+
+	slim-playback-dai-link {
+		link-name = "SLIM Playback";
+		cpu {
+			sound-dai = <&q6afedai SLIMBUS_0_RX>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+
+		codec {
+			sound-dai = <&wcd9340 0>;
+		};
+	};
+
+	slim-capture-dai-link {
+		link-name = "SLIM Capture";
+		cpu {
+			sound-dai = <&q6afedai SLIMBUS_0_TX>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+
+		codec {
+			sound-dai = <&wcd9340 1>;
+		};
+	};
+
+	spk-dai-link {
+		link-name = "TFA9874 Playback";
+		cpu {
+			sound-dai = <&q6afedai QUATERNARY_MI2S_RX>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+
+		codec {
+			sound-dai = <&tfa9874>;
+		};
+	};
+};

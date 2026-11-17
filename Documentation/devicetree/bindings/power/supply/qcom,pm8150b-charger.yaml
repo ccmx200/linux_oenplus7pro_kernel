@@ -1,0 +1,124 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/qcom,pm8150b-charger.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm PM8150B SMB5 battery charger and GEN4 fuel gauge
+
+maintainers:
+  - GengWei1997 <gw19970326@gmail.com>
+
+description: |
+  The PM8150B PMIC combines an SMB5 switch-mode battery charger with a GEN4
+  fuel gauge.  Both are reached through the PMIC register map, the charger at
+  0x1000-0x16ff and the gauge at 0x4000-0x43ff, so a single device covers
+  both and exposes the battery and USB power supplies.
+
+  The charge limits come from the battery referenced by monitored-battery:
+  the standard maxima bound the charge, and the cell profile's JEITA and
+  step-charging tables may lower them further as the battery's temperature
+  and voltage move.  The tables are optional and live on the battery node,
+  as triplets of low bound, high bound and the value to use between the
+  bounds, in the profile's own units:
+
+    - qcom,jeita-fcc-ranges: battery temperature bounds in decidegrees
+      Celsius, value is the charge current in microamps;
+    - qcom,jeita-fv-ranges: likewise, value is the float voltage in
+      microvolts;
+    - qcom,step-chg-ranges: battery voltage bounds in microvolts, value is
+      the charge current in microamps.
+
+  Boards that fit an SMB1390 charge pump may describe it with
+  charge-pump-supply.  While the pump carries the charge, the battery
+  node's optional qcom,charge-pump-fcc-ua (microamps) replaces
+  constant-charge-current-max-microamp as the charge current ceiling; the
+  tables derate it the same way.
+
+properties:
+  compatible:
+    const: qcom,pm8150b-charger
+
+  reg:
+    maxItems: 1
+    description: Base of the SMB5 charger registers.
+
+  interrupts:
+    maxItems: 2
+    description: Optional charger interrupts; without them the state is polled.
+
+  interrupt-names:
+    items:
+      - const: usbin-plugin
+      - const: chg-state-change
+
+  monitored-battery: true
+
+  charge-pump-supply:
+    description:
+      Phandle to the SMB1390 charge pump's regulator, see
+      "qcom,smb1390".  Without it the charger runs the buck converter
+      alone.
+
+  io-channels:
+    maxItems: 1
+    description: The ADC channel measuring the input voltage.
+
+  io-channel-names:
+    items:
+      - const: vbus
+
+required:
+  - compatible
+  - reg
+  - monitored-battery
+
+additionalProperties: false
+
+allOf:
+  - $ref: power-supply.yaml#
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    pmic {
+      #address-cells = <1>;
+      #size-cells = <0>;
+
+      charger@1000 {
+        compatible = "qcom,pm8150b-charger";
+        reg = <0x1000>;
+
+        interrupts = <0x2 0x12 0x4 IRQ_TYPE_EDGE_RISING>,
+                     <0x2 0x12 0x0 IRQ_TYPE_EDGE_RISING>;
+        interrupt-names = "chg-state-change", "usbin-plugin";
+
+        monitored-battery = <&battery>;
+      };
+    };
+
+    battery {
+      compatible = "simple-battery";
+      voltage-min-design-microvolt = <3400000>;
+      voltage-max-design-microvolt = <4400000>;
+      constant-charge-voltage-max-microvolt = <4400000>;
+      constant-charge-current-max-microamp = <3200000>;
+
+      qcom,jeita-fcc-ranges = <0   50  390000
+                              51  100 1100000
+                              101 150 2700000
+                              151 450 5100000
+                              451 580 1900000>;
+      qcom,jeita-fv-ranges = <0   50  4400000
+                             51  100 4400000
+                             101 150 4400000
+                             151 450 4400000
+                             451 580 4100000>;
+      qcom,step-chg-ranges = <3000000 3100000 1000000
+                             3101000 3200000 1000000
+                             3201000 3300000 1000000
+                             3301000 4200000 5100000
+                             4201000 4400000 4000000>;
+    };
+...

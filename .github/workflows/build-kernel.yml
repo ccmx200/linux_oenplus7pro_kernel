@@ -33,7 +33,7 @@ jobs:
             gcc-aarch64-linux-gnu bc bison flex libssl-dev libelf-dev \
             kmod cpio rsync zstd libdw-dev dpkg-dev debhelper \
             device-tree-compiler libgnutls28-dev python3 \
-            dwarves libncurses-dev build-essential
+            dwarves libncurses-dev build-essential gcc libc6-dev
 
       - name: Configure
         run: |
@@ -43,7 +43,8 @@ jobs:
       - name: Build kernel and deb packages
         run: |
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) bindeb-pkg
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+               HOSTCC=gcc HOSTLD=ld HOSTCXX=g++ -j$(nproc) bindeb-pkg
 
       - name: Collect artifacts
         run: |
